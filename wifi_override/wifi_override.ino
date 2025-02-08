@@ -25,13 +25,8 @@ int manualHueRatio = 50;
 // Debounce
 volatile unsigned long lastDebounceTime = 0;
 
-// Interrupt Handler
-void IRAM_ATTR toggleOverride() {
-  if (millis() - lastDebounceTime > 200) {
-    manualOverride = !manualOverride;
-    lastDebounceTime = millis();
-  }
-}
+// Function Prototype
+void IRAM_ATTR toggleOverride();
 
 void setup() {
   Serial.begin(115200);
@@ -82,30 +77,122 @@ void loop() {
   analogWrite(greenLedPin, green);
 }
 
-// Web Page HTML
+// Interrupt Handler
+void IRAM_ATTR toggleOverride() {
+  if (millis() - lastDebounceTime > 200) {
+    manualOverride = !manualOverride;
+    lastDebounceTime = millis();
+  }
+}
+
+// Serve the HTML file
 void handleRoot() {
-  String html = R"(
-    <!DOCTYPE html>
-    <html>
-    <body>
-      <h1>LED Control</h1>
-      <form action="/set">
-        Brightness (0-255): <input type="number" name="brightness" min="0" max="255" value=")" + String(manualBrightness) + R"(">
-        Hue (0-100): <input type="number" name="hue" min="0" max="100" value=")" + String(manualHueRatio) + R"(">
-        <input type="submit" value="Update">
-      </form>
-    </body>
-    </html>
-  )";
-  server.send(200, "text/html", html);
+  server.send(200, "text/html", getHTML());
 }
 
 // Handle Web Input
 void handleSet() {
-  if (server.hasArg("brightness") && server.hasArg("hue")) {
+  if (server.hasArg("brightness")) {
     manualBrightness = server.arg("brightness").toInt();
+  }
+  if (server.hasArg("hue")) {
     manualHueRatio = server.arg("hue").toInt();
   }
-  server.sendHeader("Location", "/");
-  server.send(303);
+  server.send(200, "text/plain", "OK");
+}
+
+// Get the HTML content
+String getHTML() {
+  return R"(
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>LED Control</title>
+      <style>
+        body {
+          background-color: #1a1a1a;
+          color: white;
+          font-family: monospace;
+          margin: 0;
+          padding: 20px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          height: 100vh;
+        }
+        h1 {
+          margin-bottom: 20px;
+        }
+        .slider-container {
+          width: 80%;
+          max-width: 300px;
+          margin: 10px 0;
+        }
+        .slider {
+          width: 100%;
+          height: 15px;
+          border-radius: 5px;
+          background: #333;
+          outline: none;
+          opacity: 0.7;
+          transition: opacity 0.2s;
+        }
+        .slider:hover {
+          opacity: 1;
+        }
+        .slider::-webkit-slider-thumb {
+          -webkit-appearance: none;
+          appearance: none;
+          width: 25px;
+          height: 25px;
+          border-radius: 50%;
+          background: #4CAF50;
+          cursor: pointer;
+        }
+        .slider::-moz-range-thumb {
+          width: 25px;
+          height: 25px;
+          border-radius: 50%;
+          background: #4CAF50;
+          cursor: pointer;
+        }
+        label {
+          display: block;
+          margin-bottom: 5px;
+          font-size: 16px;
+        }
+      </style>
+    </head>
+    <body>
+      <h1>Set your settings</h1>
+      <div class="slider-container">
+        <label for="brightness">Brightness:</label>
+        <input type="range" id="brightness" class="slider" min="0" max="255" value="128">
+      </div>
+      <div class="slider-container">
+        <label for="hue">Hue:</label>
+        <input type="range" id="hue" class="slider" min="0" max="100" value="50">
+      </div>
+
+      <script>
+        function sendUpdate(type, value) {
+          const xhr = new XMLHttpRequest();
+          xhr.open("GET", `/set?${type}=${value}`, true);
+          xhr.send();
+        }
+
+        document.getElementById("brightness").addEventListener("input", function() {
+          sendUpdate("brightness", this.value);
+        });
+
+        document.getElementById("hue").addEventListener("input", function() {
+          sendUpdate("hue", this.value);
+        });
+      </script>
+    </body>
+    </html>
+  )";
 }
