@@ -8,7 +8,7 @@ const int huePotPin = 35;
 const int redLedPin = 25;
 const int greenLedPin = 26;
 const int buttonPin = 2;
-const int fakeGND = 15; // Using GPIO 15 as fake GND
+const int fakeGND = 15;
 
 // WiFi Credentials
 const char* ssid = "iPhone";
@@ -18,39 +18,45 @@ const char* password = "12345678";
 WebServer server(80);
 
 // State Variables
-bool manualOverride = false;  // false = web control, true = manual control
+bool manualOverride = false;
 int totalBrightness = 0;
 int hueRatio = 0;
-int webBrightness = 128;     // Renamed for clarity
-int webHueRatio = 50;        // Renamed for clarity
+int webBrightness = 128;
+int webHueRatio = 50;
 
 // Debounce
 volatile unsigned long lastDebounceTime = 0;
 
 // Transition Variables
 bool isTransitioning = false;
+bool isWaitingForTransition = false;
 unsigned long transitionStartTime = 0;
-const unsigned long TRANSITION_DURATION = 20000; // 20 seconds
+unsigned long scheduledTransitionTime = 0;
+const unsigned long TRANSITION_DURATION = 20000;
 
-// Function Prototype
-void IRAM_ATTR toggleOverride();
+void IRAM_ATTR toggleOverride() {
+  if (millis() - lastDebounceTime > 200) {
+    manualOverride = !manualOverride;
+    isTransitioning = false;
+    isWaitingForTransition = false;  // Cancel any scheduled transition
+    lastDebounceTime = millis();
+    Serial.println(manualOverride ? "Manual mode enabled" : "Web mode enabled");
+  }
+}
 
 void setup() {
   Serial.begin(115200);
 
-  // Pin Setup
   pinMode(brightPotPin, INPUT);
   pinMode(huePotPin, INPUT);
   pinMode(redLedPin, OUTPUT);
   pinMode(greenLedPin, OUTPUT);
   pinMode(buttonPin, INPUT_PULLUP);
   pinMode(fakeGND, OUTPUT);
-  digitalWrite(fakeGND, LOW); // bc ground broke:/
+  digitalWrite(fakeGND, LOW);
 
-  // Interrupt for Override Button
   attachInterrupt(digitalPinToInterrupt(buttonPin), toggleOverride, FALLING);
 
-  // WiFi Setup
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -60,7 +66,6 @@ void setup() {
   Serial.print("IP: ");
   Serial.println(WiFi.localIP());
 
-  // Web Server Routes
   server.on("/", handleRoot);
   server.on("/set", handleSet);
   server.on("/startTransition", handleStartTransition);
@@ -69,21 +74,18 @@ void setup() {
 
 void loop() {
   server.handleClient();
-  // Only allow transitions in web mode
+  
+  // Check if it's time to start a scheduled transition
+  if (isWaitingForTransition && !manualOverride && millis() >= scheduledTransitionTime) {
+    isWaitingForTransition = false;
+    isTransitioning = true;
+    transitionStartTime = millis();
+  }
+  
   if (isTransitioning && !manualOverride) {
     updateTransition();
   } else {
     updateLEDs();
-  }
-}
-
-// Interrupt Handler
-void IRAM_ATTR toggleOverride() {
-  if (millis() - lastDebounceTime > 200) {
-    manualOverride = !manualOverride;
-    isTransitioning = false;  // Stop any transition when mode changes
-    lastDebounceTime = millis();
-    Serial.println(manualOverride ? "Manual mode enabled" : "Web mode enabled");
   }
 }
 
@@ -152,9 +154,19 @@ void handleStartTransition() {
     return;
   }
 
-  isTransitioning = true;
-  transitionStartTime = millis();
-  server.send(200, "text/plain", "Transition started");
+  if (server.hasArg("delay")) {
+    int delaySeconds = server.arg("delay").toInt();
+    if (delaySeconds > 0) {
+      isWaitingForTransition = true;
+      scheduledTransitionTime = millis() + (delaySeconds * 1000UL);
+      server.send(200, "text/plain", "Transition scheduled");
+      Serial.printf("Transition scheduled to start in %d seconds\n", delaySeconds);
+    } else {
+      server.send(400, "text/plain", "Invalid delay value");
+    }
+  } else {
+    server.send(400, "text/plain", "Delay parameter required");
+  }
 }
 
 String getHTML() {
@@ -199,6 +211,19 @@ String getHTML() {
         .slider:hover {
           opacity: 1;
         }
+        .input-container {
+          margin: 20px 0;
+          text-align: center;
+        }
+        input[type="number"] {
+          background: #333;
+          color: white;
+          border: none;
+          padding: 8px;
+          border-radius: 5px;
+          width: 100px;
+          margin-right: 10px;
+        }
         .button {
           margin-top: 20px;
           padding: 12px 20px;
@@ -212,6 +237,10 @@ String getHTML() {
         }
         .button:hover {
           background: #45a049;
+        }
+        .button:disabled {
+          background: #666;
+          cursor: not-allowed;
         }
       </style>
     </head>
@@ -228,9 +257,17 @@ String getHTML() {
         <input type="range" id="hue" class="slider" min="0" max="100" value="50">
       </div>
 
-      <button class="button" onclick="startTransition()">Start Transition</button>
+      <div class="input-container">
+        <label for="delay">Start transition in:</label>
+        <input type="number" id="delay" min="1" value="5"> seconds
+      </div>
+
+      <button class="button" onclick="startTransition()" id="transitionBtn">Schedule Transition</button>
 
       <script>
+        const transitionBtn = document.getElementById('transitionBtn');
+        let transitionTimer = null;
+
         function sendUpdate(type, value) {
           const xhr = new XMLHttpRequest();
           xhr.open("GET", `/set?${type}=${value}`, true);
@@ -243,11 +280,38 @@ String getHTML() {
         }
 
         function startTransition() {
+          const delaySeconds = document.getElementById('delay').value;
+          if (delaySeconds < 1) {
+            alert("Please enter a valid delay (minimum 1 second)");
+            return;
+          }
+
           const xhr = new XMLHttpRequest();
-          xhr.open("GET", "/startTransition", true);
+          xhr.open("GET", `/startTransition?delay=${delaySeconds}`, true);
           xhr.onreadystatechange = function () {
-            if (xhr.readyState === 4 && xhr.status === 403) {
-              alert("Manual mode active. Transition blocked.");
+            if (xhr.readyState === 4) {
+              if (xhr.status === 403) {
+                alert("Manual mode active. Transition blocked.");
+              } else if (xhr.status === 200) {
+                transitionBtn.disabled = true;
+                let countdown = delaySeconds;
+                transitionBtn.textContent = `Starting in ${countdown}s...`;
+                
+                clearInterval(transitionTimer);
+                transitionTimer = setInterval(() => {
+                  countdown--;
+                  if (countdown > 0) {
+                    transitionBtn.textContent = `Starting in ${countdown}s...`;
+                  } else {
+                    transitionBtn.textContent = "Transitioning...";
+                    setTimeout(() => {
+                      transitionBtn.disabled = false;
+                      transitionBtn.textContent = "Schedule Transition";
+                    }, 20000); // Enable after transition duration
+                    clearInterval(transitionTimer);
+                  }
+                }, 1000);
+              }
             }
           };
           xhr.send();
