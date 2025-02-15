@@ -38,7 +38,8 @@ void IRAM_ATTR toggleOverride() {
   if (millis() - lastDebounceTime > 200) {
     manualOverride = !manualOverride;
     isTransitioning = false;
-    isWaitingForTransition = false;  // Cancel any scheduled transition
+    // No longer cancel scheduled transitions when switching modes
+    // isWaitingForTransition = false;  // Removed this line
     lastDebounceTime = millis();
     Serial.println(manualOverride ? "Manual mode enabled" : "Web mode enabled");
   }
