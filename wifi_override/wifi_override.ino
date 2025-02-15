@@ -7,6 +7,7 @@ const int huePotPin = 35;
 const int redLedPin = 25;
 const int greenLedPin = 26;
 const int buttonPin = 2;
+const int fakeGND=15 //bc ground broke :/
 
 // WiFi Credentials
 const char* ssid = "iPhone";
@@ -37,7 +38,8 @@ void setup() {
   pinMode(redLedPin, OUTPUT);
   pinMode(greenLedPin, OUTPUT);
   pinMode(buttonPin, INPUT_PULLUP);
-
+  pinMode(fakeGND, OUTPUT);
+  digitalWrite(fakeGND, LOW); //bc ground broke :(
   // Interrupt for Override Button
   attachInterrupt(digitalPinToInterrupt(buttonPin), toggleOverride, FALLING);
 
