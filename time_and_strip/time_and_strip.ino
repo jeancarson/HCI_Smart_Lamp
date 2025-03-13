@@ -7,17 +7,18 @@
 // Pins
 #define LED_PIN         5
 #define NUM_LEDS        60
-#define BRIGHT_POT_PIN  34
-#define HUE_POT_PIN     35
-#define BUTTON_PIN      2
+#define BRIGHT_POT_PIN  A2
+#define HUE_POT_PIN     A3
+#define BUTTON_PIN      9
+#define MODE_SWITCH_PIN 10
 
 // WiFi Credentials
-const char* ssid = "iPhone";
-const char* password = "12345678";
+const char* ssid = "Fred's A70";
+const char* password = "password05";
 
 // NTP Configuration
 const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 3600;
+const long  gmtOffset_sec = 0;
 const int   daylightOffset_sec = 0;
 
 // Color Definitions
@@ -30,7 +31,7 @@ WebServer server(80);
 Preferences preferences;
 
 // State Variables
-volatile bool manualOverride = false;
+volatile bool powerOn = false;
 int webBrightness = 128;
 struct Schedule {
   int startHour;
@@ -42,10 +43,11 @@ struct Schedule {
 // Debounce
 volatile unsigned long lastDebounceTime = 0;
 
-void IRAM_ATTR toggleOverride() {
+void IRAM_ATTR togglePower() {
   if (millis() - lastDebounceTime > 200) {
-    manualOverride = !manualOverride;
+    powerOn = !powerOn;
     lastDebounceTime = millis();
+    Serial.println(powerOn ? "Power ON" : "Power OFF");
   }
 }
 
@@ -60,14 +62,18 @@ void setup() {
   pinMode(BRIGHT_POT_PIN, INPUT);
   pinMode(HUE_POT_PIN, INPUT);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), toggleOverride, FALLING);
+  pinMode(MODE_SWITCH_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), togglePower, FALLING);
 
   // Load saved schedule
   loadSchedule();
 
   // Connect to WiFi
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) delay(500);
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
   Serial.println("\nConnected to WiFi");
   Serial.print("IP: ");
   Serial.println(WiFi.localIP());
@@ -85,11 +91,9 @@ void setup() {
 void loop() {
   server.handleClient();
   updateLEDs();
-  delay(100);
+  delay(500);  // This is the tick length - LEDs will update every 500ms
 }
 
-// This saves the start and end times into non-volatile memory
-// This lets them persist between reboots
 void loadSchedule() {
   preferences.begin("schedule", true);
   currentSchedule.startHour = preferences.getInt("startH", 8);
@@ -108,43 +112,75 @@ void saveSchedule() {
   preferences.end();
 }
 
-void updateLEDs() {
-  if (manualOverride) {
-    // Manual mode - read from potentiometers
-    int brightness = analogRead(BRIGHT_POT_PIN) >> 2;
-    int hueValue = analogRead(HUE_POT_PIN) / 10.23; // 0-100
+void printColor(CRGB* color) {
+  Serial.print("Color: (");
+  Serial.print(color->r);
+  Serial.print(", ");
+  Serial.print(color->g);
+  Serial.print(", ");
+  Serial.print(color->b);
+  Serial.println(")");
+}
 
+void updateLEDsFromCircuit() {
+    int brightness = analogRead(BRIGHT_POT_PIN) >> 2; // Convert 12-bit ADC to 8-bit (0-1023 -> 0-255)
+    int hueValue = analogRead(HUE_POT_PIN) / 10.23; // 0-100
+    
     CRGB color = blend(warmColor, coldColor, hueValue * 2.55);
-    color.nscale8(brightness);
+    FastLED.setBrightness(brightness);
     fill_solid(leds, NUM_LEDS, color);
-  } else {
-    // Auto mode - time-based control
+}
+
+float calculateProgress(int currentSeconds, int startSeconds, int endSeconds) {
+    int totalDuration = (startSeconds < endSeconds) ?
+        (endSeconds - startSeconds) :
+        ((86400 - startSeconds) + endSeconds);
+
+    if (totalDuration == 0) totalDuration = 1;
+
+    int elapsed = (currentSeconds >= startSeconds) ?
+        (currentSeconds - startSeconds) :
+        ((86400 - startSeconds) + currentSeconds);
+
+    return constrain((float)elapsed / totalDuration, 0.0, 1.0);
+}
+
+void updateLEDsFromWeb() {
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) return;
 
-    int currentMinutes = timeinfo.tm_hour * 60 + timeinfo.tm_min;
-    int startMinutes = currentSchedule.startHour * 60 + currentSchedule.startMinute;
-    int endMinutes = currentSchedule.endHour * 60 + currentSchedule.endMinute;
+    int currentSeconds = timeinfo.tm_hour * 3600 + timeinfo.tm_min * 60 + timeinfo.tm_sec;
+    int startSeconds = currentSchedule.startHour * 3600 + currentSchedule.startMinute * 60;
+    int endSeconds = currentSchedule.endHour * 3600 + currentSchedule.endMinute * 60;
 
-    bool isActive = (startMinutes < endMinutes) ?
-      (currentMinutes >= startMinutes && currentMinutes <= endMinutes) :
-      (currentMinutes >= startMinutes || currentMinutes <= endMinutes);
+    bool isActive = (startSeconds < endSeconds) ?
+      (currentSeconds >= startSeconds && currentSeconds < endSeconds) :
+      (currentSeconds >= startSeconds || currentSeconds < endSeconds);
 
-    if (isActive) {
-      int totalDuration = abs(endMinutes - startMinutes);
-      if (totalDuration == 0) totalDuration = 1; // Prevent division by zero
-
-      int elapsed = (currentMinutes >= startMinutes) ?
-        (currentMinutes - startMinutes) :
-        ((1440 - startMinutes) + currentMinutes);
-
-      float progress = constrain((float)elapsed / totalDuration, 0.0, 1.0);
-      CRGB color = blend(warmColor, coldColor, (uint8_t)(progress * 255));
-      color.nscale8(webBrightness);
-      fill_solid(leds, NUM_LEDS, color);
-    } else {
+    if (!isActive) {
       fill_solid(leds, NUM_LEDS, CRGB::Black);
+      return;
     }
+
+    float progress = calculateProgress(currentSeconds, startSeconds, endSeconds);
+    CRGB color = blend(warmColor, coldColor, (uint8_t)(progress * 255));
+    FastLED.setBrightness(webBrightness);
+    fill_solid(leds, NUM_LEDS, color);
+}
+
+void updateLEDs() {
+  if (!powerOn) {
+    fill_solid(leds, NUM_LEDS, CRGB::Black);
+    FastLED.show();
+    return;
+  }
+
+  bool manualMode = digitalRead(MODE_SWITCH_PIN) == LOW; // LOW when switch is in manual position
+
+  if (manualMode) {
+    updateLEDsFromCircuit();
+  } else {
+    updateLEDsFromWeb();
   }
   FastLED.show();
 }
