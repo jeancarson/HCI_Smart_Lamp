@@ -1,6 +1,6 @@
 #include <FastLED.h>
 // Define LED strip parameters
-#define LED_PIN 4
+#define LED_PIN 5
 #define NUM_LEDS 60
 #define BRIGHTNESS 50
 #define LED_TYPE WS2812
@@ -21,6 +21,8 @@ State currentState = WARM_PAUSE;
 float transitionProgress = 0.0;
 
 void setup() {
+  Serial.begin(115200);
+  Serial.println("Connected to serial");
   // Initialize FastLED
   FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
   FastLED.setBrightness(BRIGHTNESS);

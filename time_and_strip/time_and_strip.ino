@@ -8,9 +8,9 @@
 #define LED_PIN         5
 #define NUM_LEDS        60
 #define BRIGHT_POT_PIN  A2
-#define HUE_POT_PIN     A3
-#define BUTTON_PIN      9
-#define MODE_SWITCH_PIN 10
+#define HUE_POT_PIN     A4
+#define MODE_SWITCH_PIN 9
+#define BUTTON_PIN      10
 
 // WiFi Credentials
 const char* ssid = "Fred's A70";
@@ -123,11 +123,17 @@ void printColor(CRGB* color) {
 }
 
 void updateLEDsFromCircuit() {
-    int brightness = analogRead(BRIGHT_POT_PIN) >> 2; // Convert 12-bit ADC to 8-bit (0-1023 -> 0-255)
-    int hueValue = analogRead(HUE_POT_PIN) / 10.23; // 0-100
-    
+    int brightness = analogRead(BRIGHT_POT_PIN) >> 4; // Convert 12-bit ADC to 8-bit (0-4096 -> 0-255)
+    int roundedBrightness = ((brightness + 5) / 10) * 10; // Round to nearest 10
+    if (roundedBrightness > 255) roundedBrightness = 255;
+    Serial.println("Brightness: "); 
+    Serial.println(roundedBrightness);
+    int hueValue = analogRead(HUE_POT_PIN); // 0-100
+    Serial.print("Hue: ");
+    Serial.println(hueValue);
+
     CRGB color = blend(warmColor, coldColor, hueValue * 2.55);
-    FastLED.setBrightness(brightness);
+    FastLED.setBrightness(roundedBrightness);
     fill_solid(leds, NUM_LEDS, color);
 }
 
@@ -175,7 +181,7 @@ void updateLEDs() {
     return;
   }
 
-  bool manualMode = digitalRead(MODE_SWITCH_PIN) == LOW; // LOW when switch is in manual position
+  bool manualMode = digitalRead(MODE_SWITCH_PIN) == HIGH;
 
   if (manualMode) {
     updateLEDsFromCircuit();
